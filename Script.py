@@ -5,6 +5,22 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 import numpy as np
+from sklearn.model_selection import KFold
+from torch.utils.data import Subset
+from resnet import resnet50  # Se hai il tuo script resnet.py con questa funzione
+import matplotlib.pyplot as plt
+import torch.nn as nn
+import torch.optim as optim
+import pandas as pd
+
+# Load the TSV file
+excel_path = 'C:\\Users\\ludov\\Desktop\\OpenDataset\\participants.xlsx'  # double backslashes
+# Read the Excel file
+df = pd.read_excel(excel_path, usecols=['participant_id', 'group'])
+
+# Mappa filename → label numerico (hc → 0, fcd → 1)
+label_mapping = {row['participant_id']: 1 if row['group'] == 'fcd' else 0 for _, row in df.iterrows()}
+
 
 # Definizione del Dataset
 class NiftiDataset(Dataset):
@@ -15,6 +31,7 @@ class NiftiDataset(Dataset):
         :param target_size: Dimensione target per il ridimensionamento (H, W, D)
         """
         self.root_dir = root_dir
+        self.label_mapping = label_mapping  # Add label mapping
         self.transform = transform
         self.target_size = target_size
         self.img_files = []
@@ -34,6 +51,7 @@ class NiftiDataset(Dataset):
     def __getitem__(self, idx):
         # Caricamento dell'immagine NIfTI
         img_path = self.img_files[idx]
+        img_name = os.path.basename(img_path)  # Extract filename
         img = nib.load(img_path).get_fdata()  # Ottieni i dati come numpy array
 
         # Z-score normalization (zero mean, unit variance)
@@ -54,22 +72,16 @@ class NiftiDataset(Dataset):
         if self.transform:
             img = self.transform(img)
 
-        return img
+        # Get label from mapping
+        label = self.label_mapping.get(img_name, 0)  # Default to 0 if not found
+
+        return img, torch.tensor(label, dtype=torch.long)
 
 # Definizione delle trasformazioni
 transform = transforms.Compose([
     transforms.RandomRotation(degrees=15),  # Rotazione casuale ±15°
 ])
 
-# Parametri
-root_dir = r'C:\Users\ludov\Desktop\OpenDataset'  # Cambia con il percorso corretto
-batch_size = 1  #_
-
-import matplotlib.pyplot as plt
-
-# Creazione del Dataset e DataLoader
-dataset = NiftiDataset(root_dir=root_dir)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 """ # Verifica caricamento dati
 for batch in dataloader:
@@ -83,33 +95,103 @@ plt.title("Slice at Depth 1")
 plt.axis('off')  # Disabilita gli assi
 plt.show() """
 
-import torch
-from resnet import resnet50  # Se hai il tuo script resnet.py con questa funzione
 
-# Assuming the dimensions of your target images are (192, 256, 256)
-sample_input_D = 192  # Depth
-sample_input_H = 256  # Height
-sample_input_W = 256  # Width
-num_classes = 2   
+# Training parameters
+num_epochs = 50
+batch_size = 1
+num_classes = 2
+lr = 0.001
+patience = 5
+num_folds = 5
 
-# Inizializza il modello con i parametri necessari
-model = resnet50(sample_input_D=sample_input_D, 
-                 sample_input_H=sample_input_H, 
-                 sample_input_W=sample_input_W, 
-                 num_seg_classes=num_classes)
+# Load dataset
+root_dir = r'C:\Users\ludov\Desktop\OpenDataset'
+dataset = NiftiDataset(root_dir=root_dir)
+kf = KFold(n_splits=num_folds, shuffle=True, random_state=42)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Cross validation
+for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
+    print(f"Training fold {fold+1}/{num_folds}")
+    
+    train_size = int(len(train_idx) * 0.8)
+    val_size = len(train_idx) - train_size
+    train_subset, val_subset = torch.utils.data.random_split(train_idx, [train_size, val_size])
+
+    train_loader = DataLoader(Subset(dataset, train_subset), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(Subset(dataset, val_subset), batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(Subset(dataset, test_idx), batch_size=batch_size, shuffle=False)
+    
+    # Build model
+    model = resnet50(sample_input_D=192, sample_input_H=256, sample_input_W=256, num_seg_classes=num_classes)
+    model.to(device)
+    
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=patience)
+    
+    best_val_loss = float('inf')
+    patience_counter = 0
+
+    
+    # Training
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        
+        for images, labels in train_loader: 
+            images, labels = images.to(device), labels.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        
+        avg_train_loss = running_loss / len(train_loader)
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+             for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                labels = torch.randint(0, num_classes, (images.shape[0],)).to(device) ###
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item()
+        
+        avg_val_loss = val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
+        
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        
+        # Early stopping
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+            torch.save(model.state_dict(), f"best_model_fold_{fold}.pth")
+        else:
+            patience_counter += 1
+        
+        if patience_counter >= patience:
+            print("Early stopping triggered!")
+            break
 
 
-# Carica il checkpoint e prendi il 'state_dict'
-checkpoint = torch.load("resnet_50_23dataset.pth")
 
-# Se il checkpoint ha una chiave 'state_dict', estraila
-if 'state_dict' in checkpoint:
+
+
+""" if 'state_dict' in checkpoint:
     checkpoint = checkpoint['state_dict']
 
-# Rimuovi il prefisso 'module.' dai nomi dei parametri se presente
 checkpoint = {k.replace('module.', ''): v for k, v in checkpoint.items()}
 
 # Carica i pesi nel modello ignorando i layer mancanti
 model.load_state_dict(checkpoint, strict=False)
 
-print(model)
+print(model) """
+
+

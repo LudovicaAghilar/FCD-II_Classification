@@ -77,12 +77,18 @@ class NiftiDataset(Dataset):
         # Get label from mapping
         label = self.label_mapping.get(img_name, 0)  # Default to 0 if not found
 
+        # Ottieni la shape dell'immagine (utilizzare la shape del tensor PyTorch)
+        #print("Shape dell'immagine:", img.shape)
+
+
+
         return img, torch.tensor(label, dtype=torch.long)
+
 
 # Definizione delle trasformazioni
 transform = transforms.Compose([
     transforms.RandomRotation(degrees=15),  # Rotazione casuale ±15°
-])
+]) 
 
 
 """ # Verifica caricamento dati
@@ -95,7 +101,9 @@ plt.figure()
 plt.imshow(batch[0, 0, :, :, 0], cmap='gray')  # Slicing al secondo indice della profondità (es. slice 1)
 plt.title("Slice at Depth 1")
 plt.axis('off')  # Disabilita gli assi
-plt.show() """
+plt.show() 
+ """
+
 
 
 # Training parameters
@@ -124,6 +132,25 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     train_loader = DataLoader(Subset(dataset, train_subset), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(Subset(dataset, val_subset), batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(Subset(dataset, test_idx), batch_size=batch_size, shuffle=False)
+
+   # Verifica caricamento dati
+    for batch in train_loader:
+        images, labels = batch  # Separare immagini e etichette
+        print("Shape del batch:", images.shape)  # Dovrebbe essere [batch_size, 1, depth, height, width]
+        break
+
+    # Visualizzazione del primo slice 2D del primo esempio nel batch
+    first_image = images[0, 0, :, :, :]  # Seleziona il primo esempio e il primo canale (in caso di immagini 1 canale)
+    
+    # Seleziona il primo slice in profondità (depth)
+    first_slice = first_image[100, :, :]  # Prendi il primo slice lungo la profondità (profondità = 0)
+
+    plt.figure()
+    plt.imshow(first_slice, cmap='gray')
+    plt.title("Slice at Depth 0")
+    plt.axis('off')  # Disabilita gli assi
+    plt.show()
+
     
     # Build model
     model = resnet50(sample_input_D=192, sample_input_H=256, sample_input_W=256, num_seg_classes=2)
@@ -136,6 +163,24 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     print(torch.cuda.device_count())  # Number of available GPUs
     print(torch.cuda.get_device_name(0))  # Name of the first GPU
     print(torch.cuda.current_device())  # Index of the currently selected GPU
+
+    # Caricamento dei pesi pre-addestrati
+    checkpoint = torch.load("resnet_50_23dataset.pth", map_location=device)
+    model.load_state_dict(checkpoint, strict=False)
+
+    # Reinizializzazione manuale di FC
+    torch.nn.init.kaiming_normal_(model.fc.weight, mode='fan_out', nonlinearity='relu')
+    model.fc.bias.data.zero_()
+    
+    # Freezing dell'encoder (tutti i layer convoluzionali)
+    for name, param in model.named_parameters():
+        if not name.startswith("fc") and not name.startswith("avgpool"):
+            param.requires_grad = False
+
+    # Mostra il modello e i parametri aggiornabili
+    summary(model, (1, 192, 256, 256))
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable Parameters: {trainable_params}")
 
     
     """ # Carica il checkpoint e prendi il 'state_dict'
@@ -156,9 +201,6 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     best_val_loss = float('inf')
     patience_counter = 0
     
-    import os
-    os.environ["PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT"] = "2.0"  # Aumenta il timeout
-
     torch.cuda.synchronize()
 
     # Training

@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.optim as optim
 import pandas as pd
+from torchsummary import summary
+
 
 # Load the TSV file
 excel_path = 'C:\\Users\\ludov\\Desktop\\OpenDataset\\participants.xlsx'  # double backslashes
@@ -124,8 +126,28 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     test_loader = DataLoader(Subset(dataset, test_idx), batch_size=batch_size, shuffle=False)
     
     # Build model
-    model = resnet50(sample_input_D=192, sample_input_H=256, sample_input_W=256, num_seg_classes=num_classes)
+    model = resnet50(sample_input_D=192, sample_input_H=256, sample_input_W=256, num_seg_classes=2)
+    print(model)
+    summary(model, (1, 192, 256, 256))
     model.to(device)
+
+    # Check GPU
+    print(torch.cuda.is_available())  # Returns True if a GPU is detected
+    print(torch.cuda.device_count())  # Number of available GPUs
+    print(torch.cuda.get_device_name(0))  # Name of the first GPU
+    print(torch.cuda.current_device())  # Index of the currently selected GPU
+
+    
+    """ # Carica il checkpoint e prendi il 'state_dict'
+    checkpoint = torch.load("resnet_50_23dataset.pth")
+
+    if 'state_dict' in checkpoint:
+        checkpoint = checkpoint['state_dict']
+
+    checkpoint = {k.replace('module.', ''): v for k, v in checkpoint.items()}
+
+    # Carica i pesi nel modello ignorando i layer mancanti
+    model.load_state_dict(checkpoint, strict=False)    """ 
     
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -133,14 +155,18 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     
     best_val_loss = float('inf')
     patience_counter = 0
-
     
+    import os
+    os.environ["PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT"] = "2.0"  # Aumenta il timeout
+
+    torch.cuda.synchronize()
+
     # Training
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
         
-        for images, labels in train_loader: 
+        for idx, (images, labels) in enumerate(train_loader): 
             images, labels = images.to(device), labels.to(device)
             
             optimizer.zero_grad()
@@ -149,6 +175,9 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+
+            print(f"Processing batch {idx+1}/{len(train_loader)}")
+            
         
         avg_train_loss = running_loss / len(train_loader)
         

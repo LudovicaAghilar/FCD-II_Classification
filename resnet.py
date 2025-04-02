@@ -143,7 +143,7 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(
             block, 512, layers[3], shortcut_type, stride=1, dilation=4)
 
-    # Aggiungere un AdaptiveAvgPool3d per ridurre la dimensione spaziale
+        # Aggiungere un AdaptiveAvgPool3d per ridurre la dimensione spaziale
         self.avgpool = nn.AdaptiveAvgPool3d(1)
 
         # Aggiungi un fully connected layer per la classificazione binaria
@@ -201,6 +201,7 @@ class ResNet(nn.Module):
 
         # Fully connected layer for binary classification
         x = self.fc(x)
+
 
         return x
 

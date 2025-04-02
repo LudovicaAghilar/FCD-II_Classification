@@ -54,6 +54,10 @@ class NiftiDataset(Dataset):
         # Caricamento dell'immagine NIfTI
         img_path = self.img_files[idx]
         img_name = os.path.basename(img_path)  # Extract filename
+
+        # Estrai l'ID del partecipante dal nome del file
+        participant_id = img_name.split('_')[0]  # ID prima dell'underscore (es. "sub-00001")
+
         img = nib.load(img_path).get_fdata()  # Ottieni i dati come numpy array
 
         # Z-score normalization (zero mean, unit variance)
@@ -74,13 +78,11 @@ class NiftiDataset(Dataset):
         if self.transform:
             img = self.transform(img)
 
-        # Get label from mapping
-        label = self.label_mapping.get(img_name, 0)  # Default to 0 if not found
+        # Get label from mapping using participant_id
+        label = self.label_mapping.get(participant_id, 0)  # Default to 0 if not found
 
         # Ottieni la shape dell'immagine (utilizzare la shape del tensor PyTorch)
         #print("Shape dell'immagine:", img.shape)
-
-
 
         return img, torch.tensor(label, dtype=torch.long)
 
@@ -125,31 +127,19 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     print(f"Training fold {fold+1}/{num_folds}")
     
-    train_size = int(len(train_idx) * 0.8)
-    val_size = len(train_idx) - train_size
-    train_subset, val_subset = torch.utils.data.random_split(train_idx, [train_size, val_size])
-
-    train_loader = DataLoader(Subset(dataset, train_subset), batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(Subset(dataset, val_subset), batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(Subset(dataset, test_idx), batch_size=batch_size, shuffle=False)
-
-   # Verifica caricamento dati
-    for batch in train_loader:
-        images, labels = batch  # Separare immagini e etichette
-        print("Shape del batch:", images.shape)  # Dovrebbe essere [batch_size, 1, depth, height, width]
-        break
-
-    # Visualizzazione del primo slice 2D del primo esempio nel batch
-    first_image = images[0, 0, :, :, :]  # Seleziona il primo esempio e il primo canale (in caso di immagini 1 canale)
+    # Creazione dei sottoinsiemi per training, validazione e test
+    test_subset = Subset(dataset, test_idx)
+    train_val_subset = Subset(dataset, train_idx)
     
-    # Seleziona il primo slice in profondità (depth)
-    first_slice = first_image[100, :, :]  # Prendi il primo slice lungo la profondità (profondità = 0)
-
-    plt.figure()
-    plt.imshow(first_slice, cmap='gray')
-    plt.title("Slice at Depth 0")
-    plt.axis('off')  # Disabilita gli assi
-    plt.show()
+    # Suddivisione training-validation
+    train_size = int(0.8 * len(train_val_subset))
+    val_size = len(train_val_subset) - train_size
+    train_subset, val_subset = torch.utils.data.random_split(train_val_subset, [train_size, val_size])
+    
+    # Creazione dei DataLoader
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
 
     
     # Build model
@@ -167,6 +157,8 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     # Caricamento dei pesi pre-addestrati
     checkpoint = torch.load("resnet_50_23dataset.pth", map_location=device)
     model.load_state_dict(checkpoint, strict=False)
+
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
 
     # Reinizializzazione manuale di FC
     torch.nn.init.kaiming_normal_(model.fc.weight, mode='fan_out', nonlinearity='relu')
@@ -203,6 +195,11 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     
     torch.cuda.synchronize()
 
+    labels = [label_mapping.get(os.path.basename(path), 0) for path in dataset.img_files]
+    unique, counts = np.unique(labels, return_counts=True)
+    print("Distribuzione classi nel dataset:", dict(zip(unique, counts)))
+
+
     # Training
     for epoch in range(num_epochs):
         model.train()
@@ -229,7 +226,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
         with torch.no_grad():
              for images, labels in val_loader:
                 images, labels = images.to(device), labels.to(device)
-                labels = torch.randint(0, num_classes, (images.shape[0],)).to(device) ###
+                #labels = torch.randint(0, num_classes, (images.shape[0],)).to(device) ###
                 outputs = model(images)
                 loss = criterion(outputs, labels)
                 val_loss += loss.item()
@@ -265,4 +262,4 @@ model.load_state_dict(checkpoint, strict=False)
 
 print(model) """
 
-
+ 

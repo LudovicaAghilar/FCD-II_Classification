@@ -117,7 +117,7 @@ class ResNet(nn.Module):
                  sample_input_D,
                  sample_input_H,
                  sample_input_W,
-                 num_seg_classes=2,
+                 num_seg_classes=1,
                  shortcut_type='B',
                  no_cuda = False):
         self.inplanes = 64
@@ -147,7 +147,10 @@ class ResNet(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool3d(1)
 
         # Aggiungi un fully connected layer per la classificazione binaria
-        self.fc = nn.Linear(512 * block.expansion, num_seg_classes)  # Cambia il numero di uscite a 2 per la classificazione binaria    
+        self.fc = nn.Linear(512 * block.expansion, num_seg_classes)  # Cambia il numero di uscite a 2 per la classificazione binaria 
+
+        # La funzione sigmoid sarà applicata qui alla fine dell'output
+        self.sigmoid = nn.Sigmoid()  
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -201,7 +204,9 @@ class ResNet(nn.Module):
 
         # Fully connected layer for binary classification
         x = self.fc(x)
-
+        
+        # Apply sigmoid to the output for binary classification
+        x = self.sigmoid(x)
 
         return x
 

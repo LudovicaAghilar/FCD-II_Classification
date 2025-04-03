@@ -13,7 +13,25 @@ import torch.nn as nn
 import torch.optim as optim
 import pandas as pd
 from torchsummary import summary
+import scipy.ndimage
+import random
 
+def set_seed(seed):
+    # Fissare il seed per la libreria standard Python
+    random.seed(seed)
+    
+    # Fissare il seed per NumPy
+    np.random.seed(seed)
+    
+    # Fissare il seed per PyTorch
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # Per la modalità multi-GPU
+    torch.backends.cudnn.deterministic = True  # Rendere deterministico per operazioni CUDA
+    torch.backends.cudnn.benchmark = False  # Disabilitare ottimizzazioni di performance non deterministiche
+
+# Esegui il seeding con un numero fisso (ad esempio 42)
+set_seed(42)
 
 # Load the TSV file
 excel_path = 'C:\\Users\\ludov\\Desktop\\OpenDataset\\participants.xlsx'  # double backslashes
@@ -26,7 +44,7 @@ label_mapping = {row['participant_id']: 1 if row['group'] == 'fcd' else 0 for _,
 
 # Definizione del Dataset
 class NiftiDataset(Dataset):
-    def __init__(self, root_dir, transform=None, target_size=(192, 256, 256)):
+    def __init__(self, root_dir, transform=None, target_size=(192, 256, 256), rotation_range=15):
         """
         :param root_dir: Directory principale con le cartelle dei soggetti
         :param transform: Eventuali trasformazioni da applicare
@@ -36,6 +54,7 @@ class NiftiDataset(Dataset):
         self.label_mapping = label_mapping  # Add label mapping
         self.transform = transform
         self.target_size = target_size
+        self.rotation_range = rotation_range
         self.img_files = []
 
         for subject in os.listdir(root_dir):
@@ -49,6 +68,24 @@ class NiftiDataset(Dataset):
 
     def __len__(self):
         return len(self.img_files)
+    
+    def random_rotation(self, img):
+        """
+        Applica una rotazione 3D casuale all'immagine.
+        :param img: L'immagine NIfTI in formato numpy
+        :return: Immagine ruotata
+        """
+        # Angoli di rotazione casuali per ciascun asse (in gradi)
+        angle_x = random.uniform(-self.rotation_range, self.rotation_range)
+        angle_y = random.uniform(-self.rotation_range, self.rotation_range)
+        angle_z = random.uniform(-self.rotation_range, self.rotation_range)
+
+        # Ruota l'immagine intorno agli assi X, Y, Z
+        img = scipy.ndimage.rotate(img, angle_x, axes=(1, 2), reshape=False)  # Rotazione sull'asse X
+        img = scipy.ndimage.rotate(img, angle_y, axes=(0, 2), reshape=False)  # Rotazione sull'asse Y
+        img = scipy.ndimage.rotate(img, angle_z, axes=(0, 1), reshape=False)  # Rotazione sull'asse Z
+        
+        return img
 
     def __getitem__(self, idx):
         # Caricamento dell'immagine NIfTI
@@ -59,14 +96,12 @@ class NiftiDataset(Dataset):
         participant_id = img_name.split('_')[0]  # ID prima dell'underscore (es. "sub-00001")
 
         img = nib.load(img_path).get_fdata()  # Ottieni i dati come numpy array
-
-        # Z-score normalization (zero mean, unit variance)
-        mean = np.mean(img)
-        std = np.std(img) + 1e-8  # Evita divisione per zero
-        img = (img - mean) / std
-
+    
         # Aggiunge il canale: (1, H, W, D)
         img = np.expand_dims(img, axis=0)
+
+        # Applicare rotazione 3D casuale
+        #img = self.random_rotation(img)
 
         # Converti in tensore PyTorch
         img = torch.tensor(img, dtype=torch.float32)
@@ -74,9 +109,10 @@ class NiftiDataset(Dataset):
         # Ridimensionamento
         img = F.interpolate(img.unsqueeze(0), size=self.target_size, mode="trilinear", align_corners=False).squeeze(0)
 
-        # Data augmentation (rotazione casuale su 3 assi)
-        if self.transform:
-            img = self.transform(img)
+        # Z-score normalization (zero mean, unit variance) on PyTorch tensor
+        mean = img.mean()
+        std = img.std() + 1e-8  # Evita divisione per zero
+        img = (img - mean) / std
 
         # Get label from mapping using participant_id
         label = self.label_mapping.get(participant_id, 0)  # Default to 0 if not found
@@ -84,13 +120,8 @@ class NiftiDataset(Dataset):
         # Ottieni la shape dell'immagine (utilizzare la shape del tensor PyTorch)
         #print("Shape dell'immagine:", img.shape)
 
-        return img, torch.tensor(label, dtype=torch.long)
+        return img, torch.tensor(label, dtype=torch.long), participant_id
 
-
-# Definizione delle trasformazioni
-transform = transforms.Compose([
-    transforms.RandomRotation(degrees=15),  # Rotazione casuale ±15°
-]) 
 
 
 """ # Verifica caricamento dati
@@ -107,11 +138,10 @@ plt.show()
  """
 
 
-
 # Training parameters
 num_epochs = 50
 batch_size = 1
-num_classes = 2
+#num_classes = 2
 lr = 0.001
 patience = 5
 num_folds = 5
@@ -143,7 +173,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
 
     
     # Build model
-    model = resnet50(sample_input_D=192, sample_input_H=256, sample_input_W=256, num_seg_classes=2)
+    model = resnet50(sample_input_D=192, sample_input_H=256, sample_input_W=256, num_seg_classes=1)
     print(model)
     summary(model, (1, 192, 256, 256))
     model.to(device)
@@ -158,21 +188,22 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     checkpoint = torch.load("resnet_50_23dataset.pth", map_location=device)
     model.load_state_dict(checkpoint, strict=False)
 
-    model.fc = nn.Linear(model.fc.in_features, num_classes)
+    #model.fc = nn.Linear(model.fc.in_features, num_classes)
 
     # Reinizializzazione manuale di FC
     torch.nn.init.kaiming_normal_(model.fc.weight, mode='fan_out', nonlinearity='relu')
     model.fc.bias.data.zero_()
     
-    # Freezing dell'encoder (tutti i layer convoluzionali)
+    # Freezing dell'encoder (tutti i layer convoluzionali tranne layer4 e fc)
     for name, param in model.named_parameters():
-        if not name.startswith("fc") and not name.startswith("avgpool"):
+        if not (name.startswith("fc") or name.startswith("layer4") or name.startswith("avgpool")):
             param.requires_grad = False
 
+
     # Mostra il modello e i parametri aggiornabili
-    summary(model, (1, 192, 256, 256))
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Trainable Parameters: {trainable_params}")
+    #summary(model, (1, 192, 256, 256))
+    #trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    #print(f"Trainable Parameters: {trainable_params}")
 
     
     """ # Carica il checkpoint e prendi il 'state_dict'
@@ -186,7 +217,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     # Carica i pesi nel modello ignorando i layer mancanti
     model.load_state_dict(checkpoint, strict=False)    """ 
     
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=patience)
     
@@ -195,25 +226,40 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     
     torch.cuda.synchronize()
 
-    labels = [label_mapping.get(os.path.basename(path), 0) for path in dataset.img_files]
-    unique, counts = np.unique(labels, return_counts=True)
-    print("Distribuzione classi nel dataset:", dict(zip(unique, counts)))
-
-
     # Training
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
         
-        for idx, (images, labels) in enumerate(train_loader): 
+        for idx, (images, labels, participant_id) in enumerate(train_loader): 
             images, labels = images.to(device), labels.to(device)
+            
+             # Plot the first slice of the image after pre-processing
+            #img_to_show = images[0].cpu().detach().numpy()  # Convert to numpy for plotting
+            #plt.figure(figsize=(6, 6))
+            #plt.imshow(img_to_show[0,100,:, :], cmap='gray')  # Visualizza il primo slice in 2D (assumendo che l'immagine sia [C, H, W, D])
+            #plt.title(f"Processed Image Slice - Participant {participant_id[0]}")
+            #plt.axis('off')
+            #plt.show()
             
             optimizer.zero_grad()
             outputs = model(images)
-            loss = criterion(outputs, labels)
+
+            outputs = model(images).squeeze()  # Remove the extra dimension, making it [batch_size]
+
+            #print(f"Participant ID: {participant_id[0]}, Output: {outputs}")  # Stampa anche l'ID
+
+            #summary(model, (1, 192, 256, 256))
+        
+            labels = labels.squeeze()  # Ensure the labels also have shape [batch_size]
+
+             # Calcola la perdita
+            loss = criterion(outputs, labels.float())  # Squeeze per eliminare la dimensione 1, se necessario
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+
 
             print(f"Processing batch {idx+1}/{len(train_loader)}")
             
@@ -224,11 +270,13 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-             for images, labels in val_loader:
+             for images, labels, participant_id in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 #labels = torch.randint(0, num_classes, (images.shape[0],)).to(device) ###
                 outputs = model(images)
-                loss = criterion(outputs, labels)
+                outputs = model(images).squeeze()  # Remove the extra dimension, making it [batch_size]
+                labels = labels.squeeze()  # Ensure the labels also have shape [batch_size]
+                loss = criterion(outputs, labels.float())
                 val_loss += loss.item()
         
         avg_val_loss = val_loss / len(val_loader)

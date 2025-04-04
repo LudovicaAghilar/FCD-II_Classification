@@ -15,6 +15,8 @@ import pandas as pd
 from torchsummary import summary
 import scipy.ndimage
 import random
+from collections import OrderedDict
+
 
 def set_seed(seed):
     # Fissare il seed per la libreria standard Python
@@ -114,6 +116,7 @@ class NiftiDataset(Dataset):
         std = img.std() + 1e-8  # Evita divisione per zero
         img = (img - mean) / std
 
+
         # Get label from mapping using participant_id
         label = self.label_mapping.get(participant_id, 0)  # Default to 0 if not found
 
@@ -186,7 +189,17 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
 
     # Caricamento dei pesi pre-addestrati
     checkpoint = torch.load("resnet_50_23dataset.pth", map_location=device)
-    model.load_state_dict(checkpoint, strict=False)
+
+    state_dict = checkpoint["state_dict"]  # o semplicemente checkpoint se è direttamente lo state_dict
+
+    # Rimuove "module." da ogni chiave
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        new_key = k.replace("module.", "")  # rimuove il prefisso
+        new_state_dict[new_key] = v
+
+    # Ora puoi caricare i pesi nel tuo modello
+    model.load_state_dict(new_state_dict, strict=False)
 
     #model.fc = nn.Linear(model.fc.in_features, num_classes)
 
@@ -217,7 +230,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     # Carica i pesi nel modello ignorando i layer mancanti
     model.load_state_dict(checkpoint, strict=False)    """ 
     
-    criterion = nn.BCELoss()
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=patience)
     
@@ -232,18 +245,37 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
         running_loss = 0.0
         
         for idx, (images, labels, participant_id) in enumerate(train_loader): 
+
+            #print(f"Participant ID: {participant_id[0]}, Label: {labels.item()}")
+
             images, labels = images.to(device), labels.to(device)
             
-             # Plot the first slice of the image after pre-processing
-            #img_to_show = images[0].cpu().detach().numpy()  # Convert to numpy for plotting
-            #plt.figure(figsize=(6, 6))
-            #plt.imshow(img_to_show[0,100,:, :], cmap='gray')  # Visualizza il primo slice in 2D (assumendo che l'immagine sia [C, H, W, D])
-            #plt.title(f"Processed Image Slice - Participant {participant_id[0]}")
-            #plt.axis('off')
-            #plt.show()
-            
+            # Plot the first slice of the image after pre-processing
+            img_to_show = images[0].cpu().detach().numpy()  # Convert to numpy for plotting
+            plt.figure(figsize=(6, 6))
+            plt.imshow(img_to_show[0,100,:, :], cmap='gray')  # Visualizza il primo slice in 2D (assumendo che l'immagine sia [C, H, W, D])
+            plt.title(f"Processed Image Slice - Participant {participant_id[0]}")
+            plt.axis('off')
+            plt.show()
+
+            # Plot the histogram of image intensities (before or after preprocessing)
+            img_to_show = images[0].cpu().detach().numpy()  # Convert to numpy for plotting
+
+            # Flatten the image to 1D to plot the intensity histogram
+            img_flattened = img_to_show.flatten()
+
+            # Create histogram of pixel intensities
+            plt.figure(figsize=(6, 6))
+            plt.hist(img_flattened, bins=100, color='gray', alpha=0.7)
+            plt.title(f"Histogram of Intensities - Participant {participant_id[0]}")
+            plt.xlabel('Intensity Value')
+            plt.ylabel('Frequency')
+            plt.show()
+                
             optimizer.zero_grad()
             outputs = model(images)
+
+            print(outputs)
 
             outputs = model(images).squeeze()  # Remove the extra dimension, making it [batch_size]
 
@@ -257,11 +289,24 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
             loss = criterion(outputs, labels.float())  # Squeeze per eliminare la dimensione 1, se necessario
             optimizer.zero_grad()
             loss.backward()
+
+             # Print gradients of parameters after backward pass
+            if idx % 10 == 0:  # Print gradients every 10 batches (or set any other condition)
+                print(f"\nGradients after batch {idx+1}/{len(train_loader)}:")
+                for name, param in model.named_parameters():
+                    if param.grad is not None:  # Ensure the parameter has a gradient
+                        print(f"{name} - Gradient: {param.grad.abs().mean().item():.6f}")  # Print the mean absolute gradient for each parameter
+
             optimizer.step()
             running_loss += loss.item()
 
 
             print(f"Processing batch {idx+1}/{len(train_loader)}")
+            #  AGGIUNGI QUESTO BLOCCO PER STAMPARE OUTPUT, LOSS E ID
+            #print(f"[TRAIN] Batch {idx+1}/{len(train_loader)} - Participant: {participant_id[0]}")
+            #print(f"        Output: {outputs.detach().cpu().numpy()}")
+            #print(f"        Label: {labels.item()} | Loss: {loss.item():.4f}")
+            #print("-" * 60)
             
         
         avg_train_loss = running_loss / len(train_loader)
@@ -271,6 +316,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
         val_loss = 0.0
         with torch.no_grad():
              for images, labels, participant_id in val_loader:
+
                 images, labels = images.to(device), labels.to(device)
                 #labels = torch.randint(0, num_classes, (images.shape[0],)).to(device) ###
                 outputs = model(images)

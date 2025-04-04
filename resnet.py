@@ -149,8 +149,10 @@ class ResNet(nn.Module):
         # Aggiungi un fully connected layer per la classificazione binaria
         self.fc = nn.Linear(512 * block.expansion, num_seg_classes)  # Cambia il numero di uscite a 2 per la classificazione binaria 
 
+       # self.dropout = nn.Dropout(p=0.5)  # Aggiungi dropout con probabilità di 0.5
+
         # La funzione sigmoid sarà applicata qui alla fine dell'output
-        self.sigmoid = nn.Sigmoid()  
+        #self.sigmoid = nn.Sigmoid()  
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -204,9 +206,11 @@ class ResNet(nn.Module):
 
         # Fully connected layer for binary classification
         x = self.fc(x)
+
+        #x = self.dropout(x)
         
         # Apply sigmoid to the output for binary classification
-        x = self.sigmoid(x)
+        #x = self.sigmoid(x)
 
         return x
 

@@ -110,133 +110,98 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-
-    def __init__(self,
-                 block,
-                 layers,
-                 sample_input_D,
-                 sample_input_H,
-                 sample_input_W,
-                 num_seg_classes=1,
-                 shortcut_type='B',
-                 no_cuda = False):
-        self.inplanes = 64
-        self.no_cuda = no_cuda
+    def __init__(self, block, layers, sample_input_D, sample_input_H, sample_input_W, num_classes=2, shortcut_type='B', no_cuda=False):
+        """
+        ResNet 3D architecture for classification.
+        
+        Parameters:
+        - block: Type of residual block (BasicBlock or Bottleneck).
+        - layers: List defining the number of blocks in each stage.
+        - num_classes: Number of output classes (default: 2 for binary classification).
+        - shortcut_type: Type of shortcut connection ('A' or 'B').
+        - no_cuda: Boolean to control CUDA usage.
+        """
         super(ResNet, self).__init__()
-        self.conv1 = nn.Conv3d(
-            1,
-            64,
-            kernel_size=7,
-            stride=(2, 2, 2),
-            padding=(3, 3, 3),
-            bias=False)
-            
+        self.inplanes = 64 
+        self.no_cuda = no_cuda
+        
+        # Input Layer: First convolutional layer to extract basic features from input volume
+        self.conv1 = nn.Conv3d(1, 64, kernel_size=7, stride=(1, 2, 2), padding=(3, 3, 3), bias=False)
+        # Batch Normalization: Normalizes activations to stabilize training
         self.bn1 = nn.BatchNorm3d(64)
+        # ReLU Activation: Introduces non-linearity
         self.relu = nn.ReLU(inplace=True)
+        # Max Pooling: Reduces spatial dimensions while keeping important features
         self.maxpool = nn.MaxPool3d(kernel_size=(3, 3, 3), stride=2, padding=1)
         
+        # Residual Blocks: Capture hierarchical spatial features across depth
         self.layer1 = self._make_layer(block, 64, layers[0], shortcut_type)
-        self.layer2 = self._make_layer(
-            block, 128, layers[1], shortcut_type, stride=2)
-        self.layer3 = self._make_layer(
-            block, 256, layers[2], shortcut_type, stride=1, dilation=2)
-        self.layer4 = self._make_layer(
-            block, 512, layers[3], shortcut_type, stride=1, dilation=4)
-
-        # Aggiungere un AdaptiveAvgPool3d per ridurre la dimensione spaziale
-        self.avgpool = nn.AdaptiveAvgPool3d(1)
-
-        # Aggiungi un fully connected layer per la classificazione binaria
-        self.fc = nn.Linear(512 * block.expansion, num_seg_classes)  # Cambia il numero di uscite a 2 per la classificazione binaria 
-
-       # self.dropout = nn.Dropout(p=0.5)  # Aggiungi dropout con probabilità di 0.5
-
-        # La funzione sigmoid sarà applicata qui alla fine dell'output
-        #self.sigmoid = nn.Sigmoid()  
-
+        self.layer2 = self._make_layer(block, 128, layers[1], shortcut_type, stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], shortcut_type, stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], shortcut_type, stride=2)
+        
+        # Global Feature Aggregation: Adaptive average pooling reduces spatial dimensions to 1x1x1
+        self.global_avg_pool = nn.AdaptiveAvgPool3d((1, 1, 1))
+        
+        # Classification Layer: Fully connected layer for final decision-making
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        
+        # Weight Initialization: Ensures stable gradient propagation
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
-                m.weight = nn.init.kaiming_normal(m.weight, mode='fan_out')
+                nn.init.kaiming_normal_(m.weight, mode='fan_out')
             elif isinstance(m, nn.BatchNorm3d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+    
     def _make_layer(self, block, planes, blocks, shortcut_type, stride=1, dilation=1):
+        """
+        Creates a residual layer consisting of multiple residual blocks.
+        
+        Parameters:
+        - block: Type of residual block (BasicBlock or Bottleneck).
+        - planes: Number of output channels.
+        - blocks: Number of blocks in this layer.
+        - shortcut_type: Defines the type of shortcut connection.
+        - stride: Defines downsampling.
+        """
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
-            if shortcut_type == 'A':
-                downsample = partial(
-                    downsample_basic_block,
-                    planes=planes * block.expansion,
-                    stride=stride,
-                    no_cuda=self.no_cuda)
-            else:
-                downsample = nn.Sequential(
-                    nn.Conv3d(
-                        self.inplanes,
-                        planes * block.expansion,
-                        kernel_size=1,
-                        stride=stride,
-                        bias=False), nn.BatchNorm3d(planes * block.expansion))
-
-        layers = []
-        layers.append(block(self.inplanes, planes, stride=stride, dilation=dilation, downsample=downsample))
+            downsample = nn.Sequential(
+                nn.Conv3d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm3d(planes * block.expansion))
+        
+        layers = [block(self.inplanes, planes, stride, downsample)]
         self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, dilation=dilation))
-
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+        
         return nn.Sequential(*layers)
     
     def forward(self, x):
+        """
+        Forward pass of the network.
+        
+        - Extracts features using initial convolution and pooling.
+        - Passes data through four residual blocks.
+        - Applies global average pooling.
+        - Flattens the output and feeds it into the fully connected layer for classification.
+        """
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-
-       #print(f"Shape after initial layers: {x.shape}")
-
+        
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-
-        #print(f"Shape after layers: {x.shape}")
-    
-        # Global Average Pooling
-        x = self.avgpool(x)
-        #print(f"Shape after avgpool: {x.shape}")  # Should be [batch_size, 512 * block.expansion, 1, 1, 1]
-
-        # Flatten
-        x = torch.flatten(x, 1)
-        #print(f"Shape after flatten: {x.shape}")  # Should be [batch_size, 512 * block.expansion]
-
-        # Fully connected layer for binary classification
-        x = self.fc(x)
-
-        #print(f"Final output shape: {x.shape}")  # Should be [batch_size, 1] for binary classification
-
+        
+        x = self.global_avg_pool(x)  # Output is (batch_size, channels, 1, 1, 1)
+        x = torch.flatten(x, 1)  # Flatten to (batch_size, channels)
+        x = self.fc(x)  # Fully connected layer for classification
+        
         return x
-
-
-def resnet10(**kwargs):
-    """Constructs a ResNet-18 model.
-    """
-    model = ResNet(BasicBlock, [1, 1, 1, 1], **kwargs)
-    return model
-
-
-def resnet18(**kwargs):
-    """Constructs a ResNet-18 model.
-    """
-    model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
-    return model
-
-
-def resnet34(**kwargs):
-    """Constructs a ResNet-34 model.
-    """
-    model = ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
-    return model
 
 
 def resnet50(**kwargs):
@@ -246,22 +211,3 @@ def resnet50(**kwargs):
     return model
 
 
-def resnet101(**kwargs):
-    """Constructs a ResNet-101 model.
-    """
-    model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
-    return model
-
-
-def resnet152(**kwargs):
-    """Constructs a ResNet-101 model.
-    """
-    model = ResNet(Bottleneck, [3, 8, 36, 3], **kwargs)
-    return model
-
-
-def resnet200(**kwargs):
-    """Constructs a ResNet-101 model.
-    """
-    model = ResNet(Bottleneck, [3, 24, 36, 3], **kwargs)
-    return model

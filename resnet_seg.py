@@ -117,7 +117,7 @@ class ResNet(nn.Module):
                  sample_input_D,
                  sample_input_H,
                  sample_input_W,
-                 num_seg_classes=1,
+                 num_seg_classes,
                  shortcut_type='B',
                  no_cuda = False):
         self.inplanes = 64
@@ -134,7 +134,6 @@ class ResNet(nn.Module):
         self.bn1 = nn.BatchNorm3d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool3d(kernel_size=(3, 3, 3), stride=2, padding=1)
-        
         self.layer1 = self._make_layer(block, 64, layers[0], shortcut_type)
         self.layer2 = self._make_layer(
             block, 128, layers[1], shortcut_type, stride=2)
@@ -143,16 +142,31 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(
             block, 512, layers[3], shortcut_type, stride=1, dilation=4)
 
-        # Aggiungere un AdaptiveAvgPool3d per ridurre la dimensione spaziale
-        self.avgpool = nn.AdaptiveAvgPool3d(1)
-
-        # Aggiungi un fully connected layer per la classificazione binaria
-        self.fc = nn.Linear(512 * block.expansion, num_seg_classes)  # Cambia il numero di uscite a 2 per la classificazione binaria 
-
-       # self.dropout = nn.Dropout(p=0.5)  # Aggiungi dropout con probabilità di 0.5
-
-        # La funzione sigmoid sarà applicata qui alla fine dell'output
-        #self.sigmoid = nn.Sigmoid()  
+        self.conv_seg = nn.Sequential(
+                                        nn.ConvTranspose3d(
+                                        512 * block.expansion,
+                                        32,
+                                        2,
+                                        stride=2
+                                        ),
+                                        nn.BatchNorm3d(32),
+                                        nn.ReLU(inplace=True),
+                                        nn.Conv3d(
+                                        32,
+                                        32,
+                                        kernel_size=3,
+                                        stride=(1, 1, 1),
+                                        padding=(1, 1, 1),
+                                        bias=False), 
+                                        nn.BatchNorm3d(32),
+                                        nn.ReLU(inplace=True),
+                                        nn.Conv3d(
+                                        32,
+                                        num_seg_classes,
+                                        kernel_size=1,
+                                        stride=(1, 1, 1),
+                                        bias=False) 
+                                        )
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -186,37 +200,19 @@ class ResNet(nn.Module):
             layers.append(block(self.inplanes, planes, dilation=dilation))
 
         return nn.Sequential(*layers)
-    
+
     def forward(self, x):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-
-       #print(f"Shape after initial layers: {x.shape}")
-
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-
-        #print(f"Shape after layers: {x.shape}")
-    
-        # Global Average Pooling
-        x = self.avgpool(x)
-        #print(f"Shape after avgpool: {x.shape}")  # Should be [batch_size, 512 * block.expansion, 1, 1, 1]
-
-        # Flatten
-        x = torch.flatten(x, 1)
-        #print(f"Shape after flatten: {x.shape}")  # Should be [batch_size, 512 * block.expansion]
-
-        # Fully connected layer for binary classification
-        x = self.fc(x)
-
-        #print(f"Final output shape: {x.shape}")  # Should be [batch_size, 1] for binary classification
+        x = self.conv_seg(x)
 
         return x
-
 
 def resnet10(**kwargs):
     """Constructs a ResNet-18 model.

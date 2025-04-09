@@ -63,7 +63,7 @@ class NiftiDataset(Dataset):
         self.rotation_range = rotation_range
         self.img_files = []
 
-        for subject in os.listdir(root_dir):
+        """ for subject in os.listdir(root_dir):
             subject_path = os.path.join(root_dir, subject)
             if os.path.isdir(subject_path):  # Controlla che sia una cartella
                 anat_path = os.path.join(subject_path, "anat")
@@ -71,6 +71,13 @@ class NiftiDataset(Dataset):
                     for file in os.listdir(anat_path):
                         if "T1w.nii" in file:  # Seleziona solo i file T1w
                             self.img_files.append(os.path.join(anat_path, file))
+ """
+        
+        # Cerca tutte le immagini che terminano con T1w_brain.nii.gz nella directory specificata
+        for file in os.listdir(root_dir):
+            if file.endswith("T1w_brain.nii.gz"):
+                self.img_files.append(os.path.join(root_dir, file))
+
 
     def __len__(self):
         return len(self.img_files)
@@ -141,7 +148,7 @@ patience = 5
 num_folds = 5
 
 # Load dataset
-root_dir = r'C:\Users\ludov\Desktop\OpenDataset'
+root_dir = r"C:\\Users\\ludov\\Desktop\\Dataset_modified\\hd_bet_output"
 dataset = NiftiDataset(root_dir=root_dir, transform=rand_rotate)
 #dataset = NiftiDataset(root_dir=root_dir)
 kf = KFold(n_splits=num_folds, shuffle=True, random_state=42)
@@ -209,10 +216,14 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     model.fc.bias.data.zero_() """
     
     # Freezing dell'encoder (tutti i layer convoluzionali tranne layer4 e fc)
-    for name, param in model.named_parameters():
+    """ for name, param in model.named_parameters():
         if not (name.startswith("fc") or name.startswith("layer4") or name.startswith("avgpool")):
-            param.requires_grad = False
+            param.requires_grad = False """
 
+    # Freezing dell'encoder (tutti i layer convoluzionali tranne layer4 e fc)
+    for name, param in model.named_parameters():
+        if not (name.startswith("fc") or name.startswith("avgpool")):
+            param.requires_grad = False
 
     # Mostra il modello e i parametri aggiornabili
     #summary(model, (1, 192, 256, 256))
@@ -254,56 +265,20 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
             #print(f"Participant ID: {participant_id[0]}, Label: {labels.item()}")
 
             images, labels = images.to(device), labels.to(device)
-            
-            # Plot the first slice of the image after pre-processing
-            """ img_to_show = images[0].cpu().detach().numpy()  # Convert to numpy for plotting
-            plt.figure(figsize=(6, 6))
-            plt.imshow(img_to_show[0,100,:, :], cmap='gray')  # Visualizza il primo slice in 2D (assumendo che l'immagine sia [C, H, W, D])
-            plt.title(f"Processed Image Slice - Participant {participant_id[0]}")
-            plt.axis('off')
-            plt.show()  """
 
             # Plot the histogram of image intensities (before or after preprocessing)
             img_to_show = images[0].cpu().detach().numpy()  # Convert to numpy for plotting
 
             # Flatten the image to 1D to plot the intensity histogram
             img_flattened = img_to_show.flatten()
-
-            # Create histogram of pixel intensities
-            """ plt.figure(figsize=(6, 6))
-            plt.hist(img_flattened, bins=100, color='gray', alpha=0.7)
-            plt.title(f"Histogram of Intensities - Participant {participant_id[0]}")
-            plt.xlabel('Intensity Value')
-            plt.ylabel('Frequency')
-            plt.show() """
                 
             optimizer.zero_grad()
             outputs = model(images)
 
-            #outputs = model(images).squeeze()  # Remove the extra dimension, making it [batch_size]
-            #print(f"Output shape: {outputs.shape}")  # Dovrebbe essere [batch_size, 1]
-
-
-            #print(f"Participant ID: {participant_id[0]}, Output: {outputs}")  # Stampa anche l'ID
-
-            #summary(model, (1, 192, 256, 256))
-        
-            #labels = labels.squeeze()  # Ensure the labels also have shape [batch_size]
-            #print(f"Labels shape: {labels.shape}")  # Dovrebbe essere [batch_size, 1]
-
-
              # Calcola la perdita
             loss = criterion(outputs, labels.float())  # Squeeze per eliminare la dimensione 1, se necessario
-            optimizer.zero_grad()
             loss.backward()
 
-             # Print gradients of parameters after backward pass
-            """ if idx % 10 == 0:  # Print gradients every 10 batches (or set any other condition)
-                print(f"\nGradients after batch {idx+1}/{len(train_loader)}:")
-                for name, param in model.named_parameters():
-                    if param.grad is not None:  # Ensure the parameter has a gradient
-                        print(f"{name} - Gradient: {param.grad.abs().mean().item():.6f}")  # Print the mean absolute gradient for each parameter
- """
             optimizer.step()
             running_loss += loss.item()
 
@@ -311,12 +286,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
             print(f"[TRAIN] Participant ID: {participant_id[0]} - Output: {outputs.detach().cpu().numpy()} - Loss: {loss.item():.4f}")
 
             print(f"Processing batch {idx+1}/{len(train_loader)}")
-            #  AGGIUNGI QUESTO BLOCCO PER STAMPARE OUTPUT, LOSS E ID
-            #print(f"[TRAIN] Batch {idx+1}/{len(train_loader)} - Participant: {participant_id[0]}")
-            #print(f"        Output: {outputs.detach().cpu().numpy()}")
-            #print(f"        Label: {labels.item()} | Loss: {loss.item():.4f}")
-            #print("-" * 60)
-            
+        
         
         avg_train_loss = running_loss / len(train_loader)
         train_losses.append(avg_train_loss)  # Aggiungi la loss di addestramento alla lista
@@ -328,10 +298,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
              for images, labels, participant_id in val_loader:
 
                 images, labels = images.to(device), labels.to(device)
-                #labels = torch.randint(0, num_classes, (images.shape[0],)).to(device) ###
                 outputs = model(images)
-                #outputs = model(images).squeeze()  # Remove the extra dimension, making it [batch_size]
-                #labels = labels.squeeze()  # Ensure the labels also have shape [batch_size]
                 loss = criterion(outputs, labels.float())
                 val_loss += loss.item()
         
@@ -361,7 +328,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     plt.ylabel('Loss')
     plt.title(f'Loss per Epoch - Fold {fold + 1}')
     plt.legend()
-    plt.show()
+    plt.show() 
 
     # Aggiungi la fase di testing dopo il training del fold
     # Aggiungi la fase di testing dopo il training del fold
@@ -378,13 +345,12 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
             outputs = model(images)
             # Applichiamo la funzione sigmoid per ottenere probabilità
             predicted = torch.sigmoid(outputs).round()  # Usa round per ottenere 0 o 1 (binary classification)
-            batch_correct = (predicted.squeeze() == labels.squeeze()).sum().item()
 
             total += labels.size(0)  # Aggiungi il numero di esempi
             correct += (predicted == labels).sum().item()  # Conta i corretti
 
             print(f"[FOLD {fold}] Test Batch {batch_idx+1}/{len(test_loader)} - Participant: {participant_id[0]}")
-            print(f"         Predicted: {predicted.squeeze().item()}, True: {labels.squeeze().item()}, Correct in Batch: {batch_correct}")
+            print(f"         Predicted: {predicted}, True: {labels}")
 
     accuracy = correct / total  # Calcola l'accuratezza per questo fold
     accuracies.append(accuracy)  # Aggiungi l'accuratezza di questo fold alla lista

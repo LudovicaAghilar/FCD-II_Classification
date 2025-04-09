@@ -16,6 +16,7 @@ from torchsummary import summary
 import scipy.ndimage
 import random
 from collections import OrderedDict
+from monai.transforms import RandRotate
 
 
 def set_seed(seed):
@@ -34,6 +35,9 @@ def set_seed(seed):
 
 # Esegui il seeding con un numero fisso (ad esempio 42)
 set_seed(42)
+
+# Inizializza la trasformazione RandRotate con un range di ±15 gradi
+rand_rotate = RandRotate(range_x=np.radians(15), range_y=np.radians(15), range_z=np.radians(15), prob=1.0, keep_size=True)
 
 # Load the TSV file
 excel_path = 'C:\\Users\\ludov\\Desktop\\OpenDataset\\participants.xlsx'  # double backslashes
@@ -71,23 +75,6 @@ class NiftiDataset(Dataset):
     def __len__(self):
         return len(self.img_files)
     
-    def random_rotation(self, img):
-        """
-        Applica una rotazione 3D casuale all'immagine.
-        :param img: L'immagine NIfTI in formato numpy
-        :return: Immagine ruotata
-        """
-        # Angoli di rotazione casuali per ciascun asse (in gradi)
-        angle_x = random.uniform(-self.rotation_range, self.rotation_range)
-        angle_y = random.uniform(-self.rotation_range, self.rotation_range)
-        angle_z = random.uniform(-self.rotation_range, self.rotation_range)
-
-        # Ruota l'immagine intorno agli assi X, Y, Z
-        img = scipy.ndimage.rotate(img, angle_x, axes=(1, 2), reshape=False)  # Rotazione sull'asse X
-        img = scipy.ndimage.rotate(img, angle_y, axes=(0, 2), reshape=False)  # Rotazione sull'asse Y
-        img = scipy.ndimage.rotate(img, angle_z, axes=(0, 1), reshape=False)  # Rotazione sull'asse Z
-        
-        return img
 
     def __getitem__(self, idx):
         # Caricamento dell'immagine NIfTI
@@ -102,11 +89,11 @@ class NiftiDataset(Dataset):
         # Aggiunge il canale: (1, H, W, D)
         img = np.expand_dims(img, axis=0)
 
-        # Applicare rotazione 3D casuale
-        #img = self.random_rotation(img)
-
         # Converti in tensore PyTorch
         img = torch.tensor(img, dtype=torch.float32)
+
+        if self.transform:
+            img = self.transform(img)
 
         # Ridimensionamento
         img = F.interpolate(img.unsqueeze(0), size=self.target_size, mode="trilinear", align_corners=False).squeeze(0)
@@ -116,13 +103,11 @@ class NiftiDataset(Dataset):
         std = img.std() + 1e-8  # Evita divisione per zero
         img = (img - mean) / std
 
-
         # Get label from mapping using participant_id
         label = self.label_mapping.get(participant_id, 0)  # Default to 0 if not found
 
         # Ottieni la shape dell'immagine (utilizzare la shape del tensor PyTorch)
         #print("Shape dell'immagine:", img.shape)
-
             
         # Stampa per verifica
         print(f"Participant ID: {participant_id} - Label: {label}")
@@ -149,7 +134,7 @@ plt.show()
 
 # Training parameters
 num_epochs = 10
-batch_size = 1
+batch_size = 4
 #num_classes = 2
 lr = 0.001
 patience = 5
@@ -157,7 +142,8 @@ num_folds = 5
 
 # Load dataset
 root_dir = r'C:\Users\ludov\Desktop\OpenDataset'
-dataset = NiftiDataset(root_dir=root_dir)
+dataset = NiftiDataset(root_dir=root_dir, transform=rand_rotate)
+#dataset = NiftiDataset(root_dir=root_dir)
 kf = KFold(n_splits=num_folds, shuffle=True, random_state=42)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -189,8 +175,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
-
-    
+ 
     # Build model
     model = resnet50(sample_input_D=192, sample_input_H=256, sample_input_W=256, num_seg_classes=1)
     print(model)
@@ -255,6 +240,10 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
     
     torch.cuda.synchronize()
 
+    # All'inizio del ciclo per ogni fold, aggiungi le liste per memorizzare le perdite per ogni epoca
+    train_losses = []  # Per memorizzare le perdite di addestramento
+    val_losses = []    # Per memorizzare le perdite di validazione
+
     # Training
     for epoch in range(num_epochs):
         model.train()
@@ -272,7 +261,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
             plt.imshow(img_to_show[0,100,:, :], cmap='gray')  # Visualizza il primo slice in 2D (assumendo che l'immagine sia [C, H, W, D])
             plt.title(f"Processed Image Slice - Participant {participant_id[0]}")
             plt.axis('off')
-            plt.show() """
+            plt.show()  """
 
             # Plot the histogram of image intensities (before or after preprocessing)
             img_to_show = images[0].cpu().detach().numpy()  # Convert to numpy for plotting
@@ -330,7 +319,8 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
             
         
         avg_train_loss = running_loss / len(train_loader)
-        
+        train_losses.append(avg_train_loss)  # Aggiungi la loss di addestramento alla lista
+
         # Validation phase
         model.eval()
         val_loss = 0.0
@@ -345,7 +335,8 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
                 loss = criterion(outputs, labels.float())
                 val_loss += loss.item()
         
-        avg_val_loss = val_loss / len(val_loader)
+        avg_val_loss = val_loss / len(val_loader)    
+        val_losses.append(avg_val_loss)  # Aggiungi la loss di validazione alla lista
         scheduler.step(avg_val_loss)
         
         print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
@@ -361,6 +352,16 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
         if patience_counter >= patience:
             print("Early stopping triggered!")
             break
+
+    # Al termine del training del fold, puoi tracciare le perdite per il fold corrente
+    plt.figure(figsize=(8, 6))
+    plt.plot(range(1, len(train_losses) + 1), train_losses, label='Training Loss', color='blue')
+    plt.plot(range(1, len(val_losses) + 1), val_losses, label='Validation Loss', color='red')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title(f'Loss per Epoch - Fold {fold + 1}')
+    plt.legend()
+    plt.show()
 
     # Aggiungi la fase di testing dopo il training del fold
     # Aggiungi la fase di testing dopo il training del fold

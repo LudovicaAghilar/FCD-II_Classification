@@ -76,7 +76,7 @@ class NiftiDataset(Dataset):
         # Restituisci l'immagine, il label (aggiungendo la dimensione di batch) e l'ID del partecipante
         return img, torch.tensor(label, dtype=torch.long).unsqueeze(0), participant_id
 
-def train_model(num_epochs=20, batch_size=8, lr=0.001, patience=5, optimizer_type='adam', experiment_name='default_exp'):
+def train_model(num_epochs, batch_size, lr, patience, optimizer, experiment_name='default_exp'):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -216,13 +216,7 @@ def train_model(num_epochs=20, batch_size=8, lr=0.001, patience=5, optimizer_typ
         ## 
 
         criterion = nn.BCEWithLogitsLoss()
-        if optimizer_type == 'adam':
-            optimizer = optim.Adam(model.parameters(), lr=lr)
-        elif optimizer_type == 'sgd':
-            optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
-        else:
-            raise ValueError("Optimizer not supported")
-        
+        optimizer = optim.Adam(model.parameters(), lr=lr)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=patience)
         
         best_val_loss = float('inf')
@@ -333,7 +327,7 @@ def train_model(num_epochs=20, batch_size=8, lr=0.001, patience=5, optimizer_typ
         print(f"Fold {fold+1} Accuracy: {accuracy * 100:.8f}%")
 
         with open("accuracies.txt", "a") as f:
-            f.write(f"[{experiment_name}] Fold {fold+1} | Acc: {accuracy * 100:.8f}% | LR: {lr} | BS: {batch_size} | Epochs: {num_epochs} | Optimizer: {optimizer_type} | Patience: {patience}\n")
+            f.write(f"[{experiment_name}] Fold {fold+1} | Acc: {accuracy * 100:.8f}% | LR: {lr} | BS: {batch_size} | Epochs: {num_epochs} | Patience: {patience}\n")
 
 
     # Calcola la media delle accuratezze
@@ -358,6 +352,6 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         lr=args.lr,
         patience=args.patience,
-        optimizer_type=args.optimizer,
+        optimizer=args.optimizer,
         experiment_name=args.experiment_name
     )

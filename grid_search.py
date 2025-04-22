@@ -5,11 +5,11 @@ import os
 import sys
 
 # Definizione dei parametri da esplorare
-lr_values = [0.001, 0.0001]
+lr_values = [0.0001, 0.001]
 batch_sizes = [8, 16]
-optimizers = ['adam', 'sgd']
-patience_values = [5, 10, 15]
-epochs = [20, 100]
+optimizers = ['adam']
+patience_values = [5, 15, 200]
+epochs = [20, 50, 100]
 
 # Lista per memorizzare i risultati
 results = []
@@ -26,14 +26,14 @@ if not os.path.exists(output_file):
 
 for i, (lr, batch_size, optimizer, patience, epoch_val) in enumerate(combinations):
     experiment_name = f"exp_{i+1}"
-    print(f"===> Running {experiment_name} with lr={lr}, bs={batch_size}, opt={optimizer}, patience={patienchgtge}")
+    print(f"===> Running {experiment_name} with lr={lr}, bs={batch_size}, opt={optimizer}, patience={patience}, epochs={epoch_val}")
 
     python_executable = sys.executable  # Questo prende il path dell'interprete in uso
 
     # Esegui il training chiamando lo script principale
     result = subprocess.run(
         [
-            python_executable, "Script_Attempt.py", 
+            python_executable, "Script_original.py", 
             "--lr", str(lr),
             "--batch_size", str(batch_size),
             "--optimizer", optimizer,

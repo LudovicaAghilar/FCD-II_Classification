@@ -1,127 +1,112 @@
-import torch
-import torch.nn.functional as F
-from resnet import resnet18  # Assicurati che il tuo script resnet.py contenga questa funzione
-import torchio as tio
 import os
-
 import torch
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import numpy as np
+import torchio as tio
+from resnet import resnet18  # Assicurati che il tuo resnet.py abbia questa funzione
 
-class GradCAM3D:
-    def __init__(self, model, target_layer):
-        self.model = model.eval()
-        self.target_layer = target_layer
-        self.gradients = None
-        self.activations = None
 
-        # Hook forward
-        def forward_hook(module, input, output):
-            self.activations = output
-
-        # Hook backward
-        def backward_hook(module, grad_input, grad_output):
-            self.gradients = grad_output[0]
-
-        self.forward_handle = self.target_layer.register_forward_hook(forward_hook)
-        self.backward_handle = self.target_layer.register_full_backward_hook(backward_hook)
-
-    def generate_cam(self, input_tensor, target_class=None):
-        self.model.zero_grad()
-        output = self.model(input_tensor)
-
-        if target_class is None:
-            # auto-infer classe predetta (assume classificazione)
-            if output.shape[1] == 1:
-                target = output[0, 0]
-            else:
-                target_class = output.argmax(dim=1).item()
-                target = output[0, target_class]
-        else:
-            target = output[0, target_class]
-
-        target.backward()
-
-        # Check dimensioni attivazioni
-        if self.gradients is None or self.activations is None:
-            raise RuntimeError("Hook non ha catturato gradienti o attivazioni. Assicurati che il target_layer sia corretto.")
-
-        # Calcolo CAM
-        weights = self.gradients.mean(dim=(2, 3, 4), keepdim=True)  # (B, C, 1, 1, 1)
-        cam = F.relu((weights * self.activations).sum(dim=1, keepdim=True))  # (B, 1, D, H, W)
-
-        # Normalizza
-        cam -= cam.min()
-        cam /= cam.max() + 1e-8
-
-        # Resize al volume originale
-        cam = F.interpolate(cam, size=input_tensor.shape[2:], mode='trilinear', align_corners=False)
-
-        return cam
-
-    def remove_hooks(self):
-        self.forward_handle.remove()
-        self.backward_handle.remove()
-
-# === 1. Trova la prima immagine FLAIR ===
+# === 1. Caricamento immagine ===
 root_dir = r"C:\Users\ludov\Desktop\flair_images"
 crop_size = (160, 256, 256)
 
 all_files = [f for f in os.listdir(root_dir) if f.endswith('_FLAIR.nii.gz')]
 if not all_files:
     raise FileNotFoundError("Nessuna immagine FLAIR trovata nella cartella.")
-img_path = os.path.join(root_dir, all_files[100])
+img_path = os.path.join(root_dir, all_files[86])  # ⚠️ assicurati che all_files[100] esista
 
 # === 2. Preprocessing ===
 subject = tio.Subject(image=tio.ScalarImage(img_path))
 transform = tio.Compose([
     tio.ZNormalization(),
     tio.CropOrPad(crop_size)
-
 ])
 subject = transform(subject)
 
-volume = subject['image'].data  # (1, D, H, W)
+volume = subject['image'].data  # shape: (1, D, H, W)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-volume = volume.to(device).unsqueeze(0)  # (1, 1, D, H, W)
+volume = volume.to(device).unsqueeze(0)  # shape: (1, 1, D, H, W)
 
-# === 3. Carica e modifica il modello ===
+# === 3. Carica modello e pesi ===
 model = resnet18(sample_input_D=160, sample_input_H=256, sample_input_W=256, num_seg_classes=1)
-best_weights = torch.load(f"best_model_fold_{0}.pth")
-best_names = best_weights['state_dict'] 
-model.load_state_dict(best_names)
+best_weights = torch.load(f"best_model_fold_{0}.pth", map_location=device)
+model.load_state_dict(best_weights['state_dict'])
 model = model.to(device)
 model.eval()
 
-# Esempio: layer target
-target_layer = model.layer3[-1]  # non l'intero blocco!
+# === 4. Implementazione Grad-CAM 3D ===
+class GradCAM3D:
+    def __init__(self, model, target_layer):
+        self.model = model
+        self.target_layer = target_layer
+        self.gradients = None
+        self.activations = None
+        self._register_hooks()
+
+    def _register_hooks(self):
+        def forward_hook(module, input, output):
+            if output is not None:
+                self.activations = output.detach()
+
+        def backward_hook(module, grad_in, grad_out):
+            if grad_out[0] is not None:
+                self.gradients = grad_out[0].detach()
+
+        self.target_layer.register_forward_hook(forward_hook)
+        self.target_layer.register_full_backward_hook(backward_hook)
+
+
+    def generate_cam(self, input_tensor, class_idx=None):
+        self.model.zero_grad()
+        output = self.model(input_tensor)  # forward pass
+        loss = output.squeeze()  # se preferisci rimuovere dimensioni inutili
+        loss.backward()  # backward pass
+
+        # Gradients shape: [1, C, D, H, W]
+        weights = self.gradients.mean(dim=[2,3,4], keepdim=True)  # global average pooling over D,H,W
+        cam = (weights * self.activations).sum(dim=1, keepdim=True)  # weighted sum over channels
+        cam = torch.relu(cam)
+        cam = cam.squeeze().cpu().numpy()
+
+        # Normalizza cam a [0,1]
+        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+        return cam
+
+# === 5. Crea istanza GradCAM e genera mappa ===
+target_layer = model.layer3  # modifica se il nome è diverso
 
 gradcam = GradCAM3D(model, target_layer)
-cam_volume = gradcam.generate_cam(volume)  # (1, 1, D, H, W)
+cam = gradcam.generate_cam(volume)  # output shape (D_cam, H_cam, W_cam)
 
-gradcam.remove_hooks()  # evita memory leak
+# === 6. Interpolazione GradCAM alla dimensione originale ===
+cam_tensor = torch.tensor(cam).unsqueeze(0).unsqueeze(0).to(device)  # shape (1,1,D_cam,H_cam,W_cam)
+cam_resized = F.interpolate(cam_tensor, size=volume.shape[2:], mode='trilinear', align_corners=False)
+cam_resized = cam_resized.squeeze().cpu().numpy()  # shape (D_orig, H_orig, W_orig)
 
-import matplotlib.pyplot as plt
-import numpy as np
+# === 7. Visualizzazione ===
+def show_gradcam_on_slice(volume, cam, alpha=0.4):
+    """
+    volume: numpy array (D, H, W) - immagine originale normalizzata
+    cam: numpy array (D, H, W) - mappa GradCAM normalizzata [0,1]
+    slice_idx: int - indice della slice da visualizzare (asse assiale)
+    alpha: float - trasparenza della heatmap
+    """
+    """ if slice_idx is None:
+        slice_idx = volume.shape[0] // 2  # slice centrale """
 
-# Rimuovi batch e channel dimensioni
-cam_np = cam_volume.squeeze().detach().cpu().numpy()
-flair_np = volume.squeeze().cpu().numpy() # (D, H, W)
+    img_slice = volume[:,170,:]
+    cam_slice = cam[:,170,:]
 
-# Prendi lo slice centrale dell'asse Z
-z = flair_np.shape[0] // 2
+    plt.figure(figsize=(6, 8))
+    plt.imshow(img_slice, cmap='gray', interpolation='none')
+    plt.imshow(cam_slice, cmap='jet', alpha=alpha, interpolation='none')
+    plt.colorbar(label='Activation intensity')
+    plt.axis('off')
+    plt.show()
 
-plt.figure(figsize=(10, 4))
+# Converti volume torch tensor a numpy per visualizzazione
+volume_np = subject['image'].data.squeeze().cpu().numpy()
 
-# FLAIR puro
-plt.subplot(1, 2, 1)
-plt.title("FLAIR")
-plt.imshow(flair_np[z+6], cmap='gray')
-
-# CAM sovrapposto
-plt.subplot(1, 2, 2)
-plt.title("CAM overlay")
-plt.imshow(flair_np[z+6], cmap='gray')
-plt.imshow(cam_np[z+6], cmap='hot', alpha=0.5)
-
-plt.tight_layout()
-plt.show()
+# Visualizza la slice centrale con GradCAM interpolata
+show_gradcam_on_slice(volume_np, cam_resized)

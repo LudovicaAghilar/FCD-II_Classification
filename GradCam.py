@@ -43,6 +43,7 @@ model = medcam.inject(
     output_dir=output_dir,
     backend='gcam',
     layer='layer3',
+    label='best',
     save_maps=True,
     return_attention=True
 )
@@ -61,30 +62,34 @@ plt.figure(figsize=(10, 5))
 
 plt.subplot(1, 2, 1)
 plt.title("FLAIR")
-plt.imshow(flair_np[z+10], cmap='gray')
+plt.imshow(flair_np[z], cmap='gray')
 plt.axis('off')
 
 plt.subplot(1, 2, 2)
 plt.title("Grad-CAM overlay")
-plt.imshow(flair_np[z+10], cmap='gray')
-plt.imshow(cam_np[z+10], cmap='hot', alpha=0.5)
+plt.imshow(flair_np[z], cmap='gray')
+plt.imshow(cam_np[z], cmap='hot', alpha=0.5)
 plt.axis('off')
 
 plt.tight_layout()
 plt.show()
 
-import nibabel as nib
-import numpy as np
+print("cam shape:", cam.shape)
 
-# volume e cam sono tensori torch (1, D, H, W)
-volume_np = volume.squeeze().cpu().numpy()  # (D, H, W)
-cam_np = cam.squeeze().cpu().numpy()        # (D, H, W)
+plt.imshow(cam_np[z], cmap='hot')
+plt.axis('off')
+plt.show()
 
-# Crea immagini NIfTI (assumendo affine identità, puoi usare l'affine originale se disponibile)
-affine = np.eye(4)
+import torch.nn.functional as F
 
-volume_img = nib.Nifti1Image(volume_np, affine)
-cam_img = nib.Nifti1Image(cam_np, affine)
+# Supponendo che `cam` sia di shape (1, D_small, H_small, W_small)
+# e `volume` di shape (1, 1, D_orig, H_orig, W_orig)
+cam_upsampled = F.interpolate(
+    cam,  # (1, 1, D, H, W) per interpolate
+    size=volume.shape[2:],  # (D, H, W)
+    mode='trilinear',
+    align_corners=False
+).squeeze(1)  # torna a (1, D, H, W)
 
-nib.save(volume_img, r'C:\Users\ludov\Scripts\flair_volume.nii.gz')
-nib.save(cam_img, r'C:\Users\ludov\Scripts\gradcam_map.nii.gz')
+cam_image = tio.ScalarImage(tensor=cam_upsampled.cpu(), affine=subject['image'].affine)
+cam_image.save('cam_resampled.nii.gz')

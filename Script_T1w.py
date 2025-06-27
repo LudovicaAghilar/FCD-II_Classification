@@ -16,14 +16,14 @@ import random
 import torchio as tio
 
 # Imposta il seed per la riproducibilità
-def set_seed(seed):
+""" def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)  # Per la modalità multi-GPU
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = False """
 
 #set_seed(42)
 
@@ -38,32 +38,35 @@ label_mapping = {row['participant_id']: 1 if row['group'] == 'fcd' else 0 for _,
 num_epochs = 50
 batch_size = 8
 lr = 0.001
-patience = 5
+patience_lr = 5
+patience = 50
 num_folds = 5
 verbose = 0
 
 # Carica il dataset
 root_dir = r"C:\Users\ludov\Desktop\T1w_images"
+#root_dir = r"C:\Users\ludov\Desktop\T1w_images_hd_bet"
 
 # Ottieni tutte le etichette
 all_files = [file for file in os.listdir(root_dir) if file.endswith("_T1w.nii.gz")]
 all_labels = [label_mapping[file.split('_')[0]] for file in all_files]
+#all_labels = [label_mapping[file.split('_')[1]] for file in all_files]
 
 # >>> QUI: stampa dimensioni originali
-""" print("Dimensioni originali dei volumi:")
-for file in all_files:
+#print("Dimensioni originali dei volumi:")
+""" for file in all_files:
     img_path = os.path.join(root_dir, file)
     img_nib = nib.load(img_path)
     data = img_nib.get_fdata()
-    print(f"{file}: {data.shape}") """ 
+    print(f"{file}: {data.shape}")  """
 
-# Trasformazione di preprocessing unica: normalizza dimensioni
+""" # Trasformazione di preprocessing unica: normalizza dimensioni """
 preprocess_transform = tio.Compose([
     tio.Resample(
         target=(1.0, 1.0, 1.0),                # nuovo spacing isotropico in mm
         image_interpolation='linear',         # per immagini continue
     ),
-    tio.Resize((160, 256, 256)),  # Ridimensiona tutte le immagini a (160, 256, 256)
+    tio.CropOrPad((160, 256, 256)),  # Ridimensiona tutte le immagini a (160, 256, 256)
     tio.ZNormalization(),
 ])
 
@@ -84,6 +87,7 @@ for file in all_files:
         participant_id=participant_id
     )
     # Applica trasformazione fissa
+
     subject = preprocess_transform(subject)
     all_subjects.append(subject)
 
@@ -106,11 +110,26 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels))
 
     train_val_labels = [all_labels[i] for i in train_idx]
 
+    # Split annidato train/val (all’interno del train_val)
     inner_skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    inner_train_idx, inner_val_idx = next(inner_skf.split(train_idx, train_val_labels))
+    inner_train_idx, inner_val_idx = next(inner_skf.split(train_val_subjects, train_val_labels))
 
     train_subjects = [train_val_subjects[i] for i in inner_train_idx]
     val_subjects = [train_val_subjects[i] for i in inner_val_idx]
+
+    # Salva i nomi dei file usati per training e validation
+    train_ids = [subject['participant_id'] for subject in train_subjects]
+    val_ids = [subject['participant_id'] for subject in val_subjects]
+
+    split_save_path = f"split_fold_{fold + 1}.txt"
+    with open(split_save_path, "w") as f:
+        f.write("TRAINING SET:\n")
+        for pid in train_ids:
+            f.write(f"{pid}\n")
+        
+        f.write("\nVALIDATION SET:\n")
+        for pid in val_ids:
+            f.write(f"{pid}\n")
 
     # Augmentation solo sul train
     train_transform = tio.RandomAffine(degrees=15)
@@ -146,7 +165,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels))
     # Ottimizzazione
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=patience)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=patience_lr)
 
     # Training
     best_val_loss = float('inf')
@@ -162,7 +181,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels))
         for batch in train_loader:
             images = batch['image'][tio.DATA].to(device)
             labels = batch['label'].to(device).float().unsqueeze(1)
-
+            print(labels)
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -171,10 +190,10 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels))
 
             running_loss += loss.item()
 
-            participant_id = batch['participant_id']
+            #participant_id = batch['participant_id']
 
              # Aggiungi il print per mostrare l'output e l'ID del partecipante
-            print(f"[TRAIN] Participant ID: {participant_id[0]} - Output: {outputs.detach().cpu().numpy()} - Loss: {loss.item():.4f}")
+            #print(f"[TRAIN] Participant ID: {participant_id[0]} - Output: {outputs.detach().cpu().numpy()} - Loss: {loss.item():.4f}")
 
         avg_train_loss = running_loss / len(train_loader)
         train_losses.append(avg_train_loss)
@@ -234,19 +253,25 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels))
     model.eval()
     correct = 0
     total = 0
+
+    # TEST: predizione e salvataggio
+    test_pred_file = f"test_predictions_fold_{fold}.txt"
+    with open(test_pred_file, "w") as f:
+        with torch.no_grad():
+            for batch in test_loader:
+                images = batch['image'][tio.DATA].to(device)
+                labels = batch['label'].to(device).float().unsqueeze(1)
+                participant_ids = batch['participant_id']
+
+                outputs = model(images)
+                probs = torch.sigmoid(outputs)
+                predicted = probs.round()
+                correct += (predicted == labels).sum().item()
+                total += labels.size(0)
+
+                for pid, true_label, prob, pred in zip(participant_ids, labels, probs, predicted):
+                    f.write(f"{pid}, True: {true_label.item()}, Pred: {pred.item()}, Prob: {prob.item():.4f}\n")
     
-    with torch.no_grad():
-        for batch in test_loader:
-            images = batch['image'][tio.DATA].to(device)
-            labels = batch['label'].to(device)
-
-            labels = labels.unsqueeze(1)  # Ora labels è di forma (N, 1)
-            
-            outputs = model(images)
-            predicted = torch.sigmoid(outputs).round()
-            correct += (predicted == labels).sum().item()
-            total += labels.size(0)
-
     accuracy = correct / total
     accuracies.append(accuracy)
     print(f"Fold {fold+1} Accuracy: {accuracy * 100:.8f}%")

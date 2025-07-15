@@ -122,12 +122,14 @@ class ResNet(nn.Module):
                  no_cuda = False):
         self.inplanes = 64
         self.no_cuda = no_cuda
+        self.gradients = None  # NEW
+        self.activations = None  # NEW
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv3d(
             1,
             64,
             kernel_size=7,
-            stride=(2, 2, 2),
+            stride=(1, 2, 2),
             padding=(3, 3, 3),
             bias=False)
             
@@ -139,9 +141,9 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(
             block, 128, layers[1], shortcut_type, stride=2)
         self.layer3 = self._make_layer(
-            block, 256, layers[2], shortcut_type, stride=1, dilation=2)
+            block, 256, layers[2], shortcut_type, stride=2) #, dilation=2)
         self.layer4 = self._make_layer(
-            block, 512, layers[3], shortcut_type, stride=1, dilation=4)
+            block, 512, layers[3], shortcut_type, stride=2) #, dilation=4)
 
         # Aggiungere un AdaptiveAvgPool3d per ridurre la dimensione spaziale
         self.avgpool = nn.AdaptiveAvgPool3d(1)
@@ -156,7 +158,7 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
-                m.weight = nn.init.kaiming_normal(m.weight, mode='fan_out')
+                m.weight = nn.init.kaiming_normal_(m.weight, mode='fan_out')
             elif isinstance(m, nn.BatchNorm3d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
@@ -187,36 +189,35 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
     
-    def forward(self, x):
+    def save_gradient(self, grad):  # NEW
+        self.gradients = grad
+    
+    def forward(self, x, reg_hook=False):  # MODIFIED
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-
-       #print(f"Shape after initial layers: {x.shape}")
 
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
 
-        #print(f"Shape after layers: {x.shape}")
-    
-        # Global Average Pooling
+        if reg_hook:  # Hook is registered HERE
+            x.register_hook(self.save_gradient)
+            self.activations = x
+
         x = self.avgpool(x)
-        #print(f"Shape after avgpool: {x.shape}")  # Should be [batch_size, 512 * block.expansion, 1, 1, 1]
-
-        # Flatten
         x = torch.flatten(x, 1)
-        #print(f"Shape after flatten: {x.shape}")  # Should be [batch_size, 512 * block.expansion]
-
-        # Fully connected layer for binary classification
         x = self.fc(x)
-
-        #print(f"Final output shape: {x.shape}")  # Should be [batch_size, 1] for binary classification
-
         return x
 
+    def get_activations_gradient(self):  # NEW
+        return self.gradients
+
+    def get_activations(self):  # NEW
+        return self.activations
+    
 
 def resnet10(**kwargs):
     """Constructs a ResNet-18 model.

@@ -11,9 +11,11 @@ from torchinfo import summary
 
 # --------------------- PARAMETRI ---------------------
 DATA_DIR       = r"C:\Users\ludov\Desktop\T1w_images"
-WEIGHTS_PATH   = r"C:\Users\ludov\Scripts\Trial_T1w_Znorm\best_model_fold_1.pth"
-TEST_TXT_PATH  = r"C:\Users\ludov\Scripts\Trial_T1w_Znorm\test_predictions_fold_1.txt"
-OUT_DIR        = r"C:\Users\ludov\Desktop\T1w_gradcam_gif"
+WEIGHTS_PATH   = r"C:\Users\ludov\Scripts\Attempt_T1w\best_model_fold_4.pth"
+#WEIGHTS_PATH   = r"C:\Users\ludov\Scripts\best_model_fold_0.pth"
+#TEST_TXT_PATH  = r"C:\Users\ludov\Scripts\Trial_T1w_Znorm\test_predictions_fold_0.txt"
+TEST_TXT_PATH  = r"C:\Users\ludov\Scripts\T1_stride\test_predictions_fold_4.txt"
+OUT_DIR        = r"C:\Users\ludov\Scripts\Attempt_T1w\fold_4"
 TARGET_LAYER   = "layer4"           # Cambia se necessario
 DEVICE         = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ALPHA, FPS     = 0.4, 10
@@ -42,9 +44,10 @@ print(f"Trovati {len(TEST_IDS)} ID nel file di test.")
 class GradCAM3D:
     def __init__(self, model, target_layer):
         self.model = model
-        self.target_layer = target_layer
+        self.tlayer = target_layer
         self.gradients = None
         self.activations = None
+        self.hooks = []
         self._register_hooks()
 
     def _register_hooks(self):
@@ -54,15 +57,13 @@ class GradCAM3D:
         def bwd_hook(_, grad_in, grad_out):
             self.gradients = grad_out[0].detach()
 
-        for name, module in self.model.named_modules():
-            if name == self.target_layer:
-                module.register_forward_hook(fwd_hook)
-                module.register_full_backward_hook(bwd_hook)
+        self.hooks.append(self.tlayer.register_forward_hook(fwd_hook))
+        self.hooks.append(self.tlayer.register_full_backward_hook(bwd_hook))
 
-    def generate(self, x):
+    def generate(self, x, class_idx):
         logits = self.model(x)
         self.model.zero_grad(set_to_none=True)
-        logits.squeeze().backward(retain_graph=True)
+        logits[0, class_idx].backward(retain_graph=True)  # backward sul logit scelto
 
         pooled = self.gradients.mean(dim=[0, 2, 3, 4])       # [C]
         heatmap = torch.einsum('cdhw,c->dhw', self.activations[0], pooled)
@@ -70,6 +71,10 @@ class GradCAM3D:
         if heatmap.max() > 0:
             heatmap /= heatmap.max()
         return heatmap.cpu().numpy()
+    
+    def close(self):
+        for h in self.hooks:
+            h.remove()
 # -----------------------------------------------------
 
 
@@ -91,12 +96,13 @@ def upsample_heatmap(hm, target_shape):
 
 def save_gif(vol_np, hm_np, out_path, alpha=0.4, fps=10, title="GradCAM"):
     fig, frames = plt.figure(figsize=(5, 5)), []
-    for i in range(vol_np.shape[0]):
+    for i in range(vol_np.shape[2]):
         fr = [
-            plt.imshow(vol_np[i], cmap="gray", animated=True),
-            plt.imshow(hm_np[i], cmap="jet", alpha=alpha, animated=True),
+            plt.imshow(vol_np[:, :, i], cmap="gray", animated=True),
+            plt.imshow(hm_np[:, :, i], cmap="jet", alpha=alpha, animated=True),
         ]
         frames.append(fr)
+
     plt.axis("off")
     plt.title(title)
     ani = animation.ArtistAnimation(fig, frames, interval=1000//fps, blit=True)
@@ -115,7 +121,7 @@ state = torch.load(WEIGHTS_PATH, map_location=DEVICE)
 model.load_state_dict(state["state_dict"])
 model.eval()
 
-gradcam = GradCAM3D(model, TARGET_LAYER)
+gradcam = GradCAM3D(model, model.layer4)
 # -----------------------------------------------------
 
 
@@ -143,7 +149,18 @@ for path in nii_files:
         with torch.no_grad():
             _ = model(vol)                                # forward (class score)
 
-        heatmap = gradcam.generate(vol)                   # (D,H,W)
+        heatmap = gradcam.generate(vol, class_idx=0) 
+        
+        import nibabel as nib
+
+        # Salvataggio heatmap "raw" (senza upsampling)
+        hm_raw_path = os.path.join(OUT_DIR, f"{subj_prefix}_gradcam_raw.nii.gz")
+        heatmap_raw = heatmap.astype(np.float32)  # (D,H,W)
+
+        # Crea immagine Nifti senza affine (può essere aggiornato se necessario)
+        nib.save(nib.Nifti1Image(heatmap_raw, affine=np.eye(4)), hm_raw_path)
+        print(f"{subj_prefix}: salvata heatmap raw in {hm_raw_path}")
+
         heatmap = upsample_heatmap(heatmap, vol.shape[-3:])  # resize to (160,256,256)
 
         vol_np = vol[0, 0].cpu().numpy()                  # (D,H,W)
@@ -157,4 +174,7 @@ for path in nii_files:
 
     except Exception as e:
         print(f"Errore con {subj_prefix}: {e}")
+    
+gradcam.close()
+
 # -----------------------------------------------------

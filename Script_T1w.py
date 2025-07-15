@@ -39,7 +39,7 @@ num_epochs = 50
 batch_size = 8
 lr = 0.001
 patience_lr = 5
-patience = 50
+patience = 10
 num_folds = 5
 verbose = 0
 
@@ -98,29 +98,33 @@ for file in all_files:
 # Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+from sklearn.model_selection import train_test_split
+
+# Split iniziale 80% train_val e 20% test
+train_val_subjects, test_subjects, train_val_labels, test_labels = train_test_split(
+    all_subjects, all_labels, test_size=0.2, stratify=all_labels, random_state=42
+)
+
+#Crea test dataset e loader UNA VOLTA
+test_dataset = tio.SubjectsDataset(test_subjects)
+test_loader = tio.SubjectsLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
 kf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=42)
+
 accuracies = []
 
-for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels)):
+for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_subjects, train_val_labels)):
     print(f"Training fold {fold+1}/{num_folds}")
 
-    # Split
-    train_val_subjects = [all_subjects[i] for i in train_idx]
-    test_subjects = [all_subjects[i] for i in test_idx]
+    train_subjects = [train_val_subjects[i] for i in train_idx]
+    val_subjects = [train_val_subjects[i] for i in val_idx]
 
-    train_val_labels = [all_labels[i] for i in train_idx]
-
-    # Split annidato train/val (all’interno del train_val)
-    inner_skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    inner_train_idx, inner_val_idx = next(inner_skf.split(train_val_subjects, train_val_labels))
-
-    train_subjects = [train_val_subjects[i] for i in inner_train_idx]
-    val_subjects = [train_val_subjects[i] for i in inner_val_idx]
+    train_labels = [train_val_labels[i] for i in train_idx]
 
     # Salva i nomi dei file usati per training e validation
     train_ids = [subject['participant_id'] for subject in train_subjects]
     val_ids = [subject['participant_id'] for subject in val_subjects]
-
+    
     split_save_path = f"split_fold_{fold + 1}.txt"
     with open(split_save_path, "w") as f:
         f.write("TRAINING SET:\n")
@@ -137,12 +141,10 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels))
     # Dataset
     train_dataset = tio.SubjectsDataset(train_subjects, transform=train_transform)
     val_dataset = tio.SubjectsDataset(val_subjects)
-    test_dataset = tio.SubjectsDataset(test_subjects)
 
     # Loader
     train_loader = tio.SubjectsLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = tio.SubjectsLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    test_loader = tio.SubjectsLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Modello
     model = resnet18(sample_input_D=160, sample_input_H=256, sample_input_W=256, num_seg_classes=1)
@@ -159,8 +161,22 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels))
 
     # Freezing parziale
     for name, param in model.named_parameters():
+        #print(name)
         if not (name.startswith("fc") or name.startswith("layer4") or name.startswith("avgpool")):
             param.requires_grad = False
+    
+    import re
+ 
+    # Match 'layer4.0.bn1.weight', 'layer4.0.bn1.bias', 'layer4.0.bn2.weight', 'layer4.0.bn2.bias'
+    pattern = re.compile(r'^layer4\.[01]\.bn[12]\.(weight|bias)$')
+
+    # Assuming 'model' is your PyTorch model
+    for name, param in model.named_parameters():
+        if pattern.match(name):
+            param.requires_grad = False
+            #print(f"Disabled gradient for: {name}")
+    
+    summary(model,(1,160,256,256))
 
     # Ottimizzazione
     criterion = nn.BCEWithLogitsLoss()
@@ -181,7 +197,7 @@ for fold, (train_idx, test_idx) in enumerate(kf.split(all_subjects, all_labels))
         for batch in train_loader:
             images = batch['image'][tio.DATA].to(device)
             labels = batch['label'].to(device).float().unsqueeze(1)
-            print(labels)
+            #print(labels)
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)

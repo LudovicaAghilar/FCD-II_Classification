@@ -129,7 +129,7 @@ class ResNet(nn.Module):
             1,
             64,
             kernel_size=7,
-            stride=(1, 2, 2),
+            stride=(2, 2, 2),
             padding=(3, 3, 3),
             bias=False)
             
@@ -141,12 +141,14 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(
             block, 128, layers[1], shortcut_type, stride=2)
         self.layer3 = self._make_layer(
-            block, 256, layers[2], shortcut_type, stride=2) #, dilation=2)
+            block, 256, layers[2], shortcut_type, stride=1, dilation=2)
         self.layer4 = self._make_layer(
-            block, 512, layers[3], shortcut_type, stride=2) #, dilation=4)
+            block, 512, layers[3], shortcut_type, stride=1, dilation=4)
 
         # Aggiungere un AdaptiveAvgPool3d per ridurre la dimensione spaziale
         self.avgpool = nn.AdaptiveAvgPool3d(1)
+
+        #self.dropout = nn.Dropout(p=0.2)  # <--- AGGIUNTO QUI
 
         # Aggiungi un fully connected layer per la classificazione binaria
         self.fc = nn.Linear(512 * block.expansion, num_seg_classes)  # Cambia il numero di uscite a 2 per la classificazione binaria 
@@ -158,7 +160,7 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
-                m.weight = nn.init.kaiming_normal_(m.weight, mode='fan_out')
+                m.weight = nn.init.kaiming_normal(m.weight, mode='fan_out')
             elif isinstance(m, nn.BatchNorm3d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
@@ -192,7 +194,7 @@ class ResNet(nn.Module):
     def save_gradient(self, grad):  # NEW
         self.gradients = grad
     
-    def forward(self, x, reg_hook=False):  # MODIFIED
+    def forward(self, x):  # MODIFIED
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -202,11 +204,14 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
- #       if reg_hook:  # Hook is registered HERE
- #           x.register_hook(self.save_gradient)
- #           self.activations = x
+
+        """ if reg_hook:  # Hook is registered HERE
+            x.register_hook(self.save_gradient)
+            self.activations = x """
+
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
+        #x = self.dropout(x)  # <--- USATO QUI
         x = self.fc(x)
         return x
 
